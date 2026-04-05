@@ -1,0 +1,40 @@
+app:
+    name: cargoguardcli
+    version: 1.0.0
+    env: dev
+log:
+    level: debug
+    file: ""
+    maxSize: 100
+    maxAge: 7
+    maxBackups: 3
+    compress: false
+    color: true
+telemetry:
+    enabled: true
+    endpoint: ""
+    serviceName: ""
+    serviceVersion: ""
+    env: dev
+scan:
+    defaultPath: .
+    fullScan: false
+    format: table
+    excludeDirs:
+        - target
+        - node_modules
+        - .git
+        - .svn
+    includeExts:
+        - .rs
+        - .toml
+        - .lock
+    timeout: 300
+guard:
+    interval: 30
+    notify: true
+    autoRestart: false
+report:
+    defaultType: summary
+    defaultOutput: ./report.html
+    template: ""
