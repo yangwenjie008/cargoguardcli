@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	dockerclient "cargoguardcli/docker"
 	helmclient "cargoguardcli/helm"
 	"cargoguardcli/k8s"
+	"cargoguardcli/update"
 )
 
 func main() {
@@ -764,6 +766,51 @@ func main() {
 								Name:  "list",
 								Usage: "List installed chart repositories",
 								Action: helmRepoListCmd,
+							},
+						},
+					},
+				},
+			},
+			// Self-update commands
+			{
+				Name:  "update",
+				Usage: "Self-update cargoguardcli",
+				Subcommands: []*cli.Command{
+					{
+						Name:   "check",
+						Usage:  "Check for available updates",
+						Action: updateCheckCmd,
+						Flags: []cli.Flag{
+							&cli.BoolFlag{
+								Name:  "pre-release",
+								Usage: "Include pre-release versions",
+							},
+						},
+					},
+					{
+						Name:   "install",
+						Usage:  "Download and install latest version",
+						Action: updateInstallCmd,
+						Flags: []cli.Flag{
+							&cli.BoolFlag{
+								Name:  "force",
+								Usage: "Force update even if checksums don't match",
+							},
+							&cli.BoolFlag{
+								Name:    "yes",
+								Aliases: []string{"y"},
+								Usage:   "Skip confirmation prompt",
+							},
+						},
+					},
+					{
+						Name:   "rollback",
+						Usage:  "Rollback to a previous version",
+						Action: updateRollbackCmd,
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:  "version",
+								Usage: "Specific version to rollback to",
 							},
 						},
 					},
@@ -2096,7 +2143,9 @@ func helmChartInfoCmd(c *cli.Context) error {
 	return nil
 }
 
-// helmPullCmd 拉取 Chart
+
+// ========================================
+// helmPullCmd pulls a chart from a repository
 func helmPullCmd(c *cli.Context) error {
 	chartRef := c.String("chart")
 	version := c.String("version")
@@ -2120,6 +2169,126 @@ func helmPullCmd(c *cli.Context) error {
 		return fmt.Errorf("failed to pull chart: %w", err)
 	}
 
-	fmt.Printf("✅ Chart downloaded to: %s\n", path)
+	fmt.Printf("Chart downloaded to: %s\n", path)
+	return nil
+}
+// Update Commands (Self-update)
+// ========================================
+
+// updateCheckCmd checks for updates
+func updateCheckCmd(c *cli.Context) error {
+	ctx := context.Background()
+	preRelease := c.Bool("pre-release")
+
+	updater := update.NewUpdater(update.Config{
+		Repo:           "yangwenjie008/cargoguardcli",
+		CurrentVersion: "1.0.0",
+	})
+
+	updateInfo, err := updater.CheckForUpdates(ctx)
+	if err != nil {
+		if errors.Is(err, update.ErrNoUpdateAvailable) {
+			fmt.Println("Already on latest version!")
+			return nil
+		}
+		return fmt.Errorf("check failed: %w", err)
+	}
+
+	fmt.Println("New version available!")
+	fmt.Printf("  Current: %s\n", updateInfo.CurrentVersion)
+	fmt.Printf("  Latest:  %s\n", updateInfo.LatestVersion)
+	fmt.Printf("  Released: %s\n", updateInfo.PublishedAt)
+
+	if preRelease || !updateInfo.Prerelease {
+		fmt.Println("\nRelease notes:")
+		fmt.Println(updateInfo.ReleaseNotes)
+	}
+
+	fmt.Println("\nRun 'cargoguardcli update install' to update")
+	return nil
+}
+
+// updateInstallCmd installs the update
+func updateInstallCmd(c *cli.Context) error {
+	ctx := context.Background()
+	force := c.Bool("force")
+	yes := c.Bool("yes")
+
+	updater := update.NewUpdater(update.Config{
+		Repo:           "yangwenjie008/cargoguardcli",
+		CurrentVersion: "1.0.0",
+	})
+
+	updateInfo, err := updater.CheckForUpdates(ctx)
+	if err != nil {
+		if errors.Is(err, update.ErrNoUpdateAvailable) {
+			fmt.Println("Already on latest version!")
+			return nil
+		}
+		return fmt.Errorf("check failed: %w", err)
+	}
+
+	if !yes {
+		fmt.Printf("Update from %s to %s\n", updateInfo.CurrentVersion, updateInfo.LatestVersion)
+		fmt.Print("Continue? [y/N]: ")
+		var confirm string
+		fmt.Scanln(&confirm)
+		if strings.ToLower(confirm) != "y" {
+			fmt.Println("Cancelled")
+			return nil
+		}
+	}
+
+	result, err := updater.DownloadAndInstall(ctx, updateInfo, force)
+	if err != nil {
+		return fmt.Errorf("update failed: %w", err)
+	}
+
+	fmt.Printf("\nUpdate successful!\n")
+	fmt.Printf("  Old: %s\n", result.OldVersion)
+	fmt.Printf("  New: %s\n", result.NewVersion)
+	fmt.Printf("  Backup: %s\n", result.BackupPath)
+	fmt.Println("\nRun 'cargoguardcli update rollback' if needed")
+
+	return nil
+}
+
+// updateRollbackCmd rolls back to previous version
+func updateRollbackCmd(c *cli.Context) error {
+	version := c.String("version")
+
+	if version == "" {
+		updater := update.NewUpdater(update.Config{
+			Repo:           "yangwenjie008/cargoguardcli",
+			CurrentVersion: "1.0.0",
+		})
+
+		backups, err := updater.ListBackups()
+		if err != nil {
+			return fmt.Errorf("list backups failed: %w", err)
+		}
+
+		if len(backups) == 0 {
+			fmt.Println("No backups available")
+			return nil
+		}
+
+		fmt.Println("Available backups:")
+		for _, backup := range backups {
+			fmt.Printf("  - %s\n", backup)
+		}
+		fmt.Println("\nUse 'cargoguardcli update rollback --version <version>' to rollback")
+		return nil
+	}
+
+	updater := update.NewUpdater(update.Config{
+		Repo:           "yangwenjie008/cargoguardcli",
+		CurrentVersion: "1.0.0",
+	})
+
+	if err := updater.Rollback(version); err != nil {
+		return fmt.Errorf("rollback failed: %w", err)
+	}
+
 	return nil
 }
